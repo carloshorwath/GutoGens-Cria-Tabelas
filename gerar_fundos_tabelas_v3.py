@@ -3,6 +3,7 @@ import sys
 import re
 import time
 import argparse
+import copy
 import numpy as np
 from pathlib import Path
 
@@ -59,13 +60,19 @@ class TableImageGenerator:
 
         # Floor glow
         glow_h = int(height * 0.15)
+
+        # Derive glow color from center color, boosting it a bit to glow
+        glow_r = min(255, int(cr * 1.5) if cr > 20 else 100)
+        glow_g = min(255, int(cg * 1.5) if cg > 20 else 100)
+        glow_b = min(255, int(cb * 1.5) if cb > 20 else 100)
+
         for row in range(glow_h):
             t = 1 - row / glow_h
             y_pos = height - 1 - row
             blend = t * 0.15
-            arr[y_pos, :, 0] = np.clip(arr[y_pos, :, 0].astype(float) + 255 * blend, 0, 255).astype(np.uint8)
-            arr[y_pos, :, 1] = np.clip(arr[y_pos, :, 1].astype(float) + 68 * blend, 0, 255).astype(np.uint8)
-            arr[y_pos, :, 2] = np.clip(arr[y_pos, :, 2].astype(float) + 68 * blend, 0, 255).astype(np.uint8)
+            arr[y_pos, :, 0] = np.clip(arr[y_pos, :, 0].astype(float) + glow_r * blend, 0, 255).astype(np.uint8)
+            arr[y_pos, :, 1] = np.clip(arr[y_pos, :, 1].astype(float) + glow_g * blend, 0, 255).astype(np.uint8)
+            arr[y_pos, :, 2] = np.clip(arr[y_pos, :, 2].astype(float) + glow_b * blend, 0, 255).astype(np.uint8)
 
         return Image.fromarray(arr, 'RGB')
 
@@ -155,8 +162,7 @@ class TableImageGenerator:
         for i, table in enumerate(tables):
             # 4. Automatic visual improvements: row numbers and highlighting
             # Clone the table so we don't modify the original soup structure globally
-            import copy
-            table_copy = copy.copy(table)
+            table_copy = copy.deepcopy(table)
 
             # highlight total row
             for row in table_copy.find_all("tr"):
@@ -183,13 +189,21 @@ class TableImageGenerator:
             for tr in tbody.find_all("tr"):
                 if tr.parent.name == "thead": continue
                 if not tr.find("td") and tr.find("th"): continue # inner header
+
+                text = tr.get_text().lower()
+                is_total_row = any(word in text for word in ['total', 'sobra', 'resultado', 'saldo'])
+
                 new_td = soup.new_tag("td")
-                new_td.string = str(idx)
+                if is_total_row:
+                    new_td.string = ""
+                else:
+                    new_td.string = str(idx)
+                    idx += 1
+
                 # Keep odd/even background style alignment by not adding inline styles unless necessary,
                 # but center the number
                 new_td['style'] = "text-align: center; color: #888; font-weight: bold;"
                 tr.insert(0, new_td)
-                idx += 1
 
             title_p = table.find_previous_sibling("p", class_="table-title")
             title = title_p.get_text() if title_p else f"Tabela_{i+1}"
@@ -285,6 +299,7 @@ class TableImageGenerator:
         td {{
             padding: 22px 20px;
             border-bottom: 1px solid rgba(255,255,255,0.08);
+            color: #eeeeee !important;
         }}
 
         tr:nth-child(even) td {{
@@ -460,16 +475,6 @@ class TableImageGenerator:
             final.save(save_path)
 
         return final
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--no-gui', action='store_true')
-    parser.add_argument('--html', default='index.html')
-    args = parser.parse_args()
-    print("Testing functionality...")
-    generator = TableImageGenerator()
-    original_css, tables = generator.process_table_html(args.html)
-    print(f"Loaded {len(tables)} tables")
 
 # -------------------------------
 # GUI
