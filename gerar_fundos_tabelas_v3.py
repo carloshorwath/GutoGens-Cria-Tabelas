@@ -213,11 +213,21 @@ class TableImageGenerator:
             clean_title = title.replace("(Salário Bruto)", "").replace("(Salário Líquido)", "").strip()
             safe_title = re.sub(r"[^\w\s-]", "", clean_title).strip().replace(" ", "_")
 
+            columns = []
+            thead = table_copy.find("thead")
+            if thead:
+                # get all th from the first tr
+                tr = thead.find("tr")
+                if tr:
+                    for th in tr.find_all("th"):
+                        columns.append(th.get_text().strip())
+
             processed_tables.append({
                 "index": i,
                 "title": clean_title,
                 "safe_title": safe_title,
-                "html": str(table_copy)
+                "html": str(table_copy),
+                "columns": columns
             })
 
         return original_css, processed_tables
@@ -336,6 +346,28 @@ class TableImageGenerator:
         {decorative_line_css}
         """
 
+        # Inject colgroup if col_widths is provided
+        table_html = table_data['html']
+        col_widths = settings.get('col_widths', {})
+        if any(w > 0 for w in col_widths.values() if isinstance(w, (int, float))):
+            try:
+                soup = BeautifulSoup(table_html, "html.parser")
+                table_tag = soup.find("table")
+                if table_tag:
+                    colgroup = soup.new_tag("colgroup")
+                    # Make sure we iterate through all defined columns up to the maximum index
+                    max_idx = max([int(k) for k in col_widths.keys()] + [-1])
+                    for i in range(max_idx + 1):
+                        w = col_widths.get(str(i), 0)
+                        col_tag = soup.new_tag("col")
+                        if w > 0:
+                            col_tag['style'] = f"width:{w}px;"
+                        colgroup.append(col_tag)
+                    table_tag.insert(0, colgroup)
+                    table_html = str(soup)
+            except Exception as e:
+                print(f"Erro ao aplicar col_widths: {e}")
+
         html_render = f"""
         <html>
         <head>
@@ -350,7 +382,7 @@ class TableImageGenerator:
                 <div class="decorative-line"></div>
                 <p class="table-title">{table_data['title']}</p>
             </div>
-            {table_data['html']}
+            {table_html}
         </div>
         </body>
         </html>
@@ -511,10 +543,13 @@ class AppGUI:
 
         self.table_settings = {}
         for t in self.tables:
+            # Initialize column widths to 0
+            col_widths = {str(j): 0 for j in range(len(t.get("columns", [])))}
             self.table_settings[str(t["index"])] = {
                 'offset_x': 0,
                 'offset_y': 0,
-                'scale': 1.0
+                'scale': 1.0,
+                'col_widths': col_widths
             }
 
         self.bg_color_center = list(THEMES["Dark Red"]["bg_center"])
@@ -556,6 +591,7 @@ class AppGUI:
         self.table_settings[active_idx]['offset_x'] = self.offset_x.get()
         self.table_settings[active_idx]['offset_y'] = self.offset_y.get()
         self.table_settings[active_idx]['scale'] = self.scale_var.get()
+        self.table_settings[active_idx]['col_widths'] = {str(i): int(float(v.get())) for i, v in enumerate(self.col_width_vars)}
 
         data = {
             "theme": self.theme_name.get(),
@@ -622,6 +658,30 @@ class AppGUI:
         self.lbl_scale.pack(anchor=tk.W)
         ttk.Scale(left_frame, from_=0.5, to=2.0, variable=self.scale_var, command=self._on_slider_change).pack(fill=tk.X, pady=(0, 20))
 
+        # Column widths
+        ttk.Label(left_frame, text="Largura das Colunas:").pack(anchor=tk.W)
+
+        # Scrollable area for column widths
+        self.cols_canvas = tk.Canvas(left_frame, width=200, height=150)
+        self.cols_scrollbar = ttk.Scrollbar(left_frame, orient="vertical", command=self.cols_canvas.yview)
+        self.cols_frame = ttk.Frame(self.cols_canvas)
+
+        self.cols_frame.bind(
+            "<Configure>",
+            lambda e: self.cols_canvas.configure(
+                scrollregion=self.cols_canvas.bbox("all")
+            )
+        )
+        self.cols_canvas.create_window((0, 0), window=self.cols_frame, anchor="nw")
+        self.cols_canvas.configure(yscrollcommand=self.cols_scrollbar.set)
+
+        self.cols_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.cols_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.col_width_vars = []
+        self.col_width_labels = []
+        self._build_col_sliders()
+
         # Buttons
         self.btn_save = ttk.Button(left_frame, text="Salvar Esta (Save This)", command=self._save_current_threaded)
         self.btn_save.pack(fill=tk.X, pady=5)
@@ -649,6 +709,39 @@ class AppGUI:
         self._pending_update = None
         self._is_rendering = False
 
+    def _build_col_sliders(self):
+        # Clear existing
+        for widget in self.cols_frame.winfo_children():
+            widget.destroy()
+        self.col_width_vars = []
+        self.col_width_labels = []
+
+        table_data = self.tables[self.current_table_idx]
+        cols = table_data.get("columns", [])
+
+        # We also have the '#' column added dynamically
+        # But let's check what 'columns' extracted. It should include '#' because it was added in `process_table_html`.
+        idx_str = str(table_data["index"])
+        saved_widths = self.table_settings[idx_str].get('col_widths', {})
+
+        for i, col_name in enumerate(cols):
+            val = tk.IntVar(value=saved_widths.get(str(i), 0))
+            self.col_width_vars.append(val)
+
+            display_name = col_name if col_name else f"Col {i+1}"
+            lbl = ttk.Label(self.cols_frame, text=f"{display_name}: {val.get()}px")
+            lbl.pack(anchor=tk.W, pady=(5, 0))
+            self.col_width_labels.append(lbl)
+
+            def make_cmd(idx):
+                return lambda v: self._on_col_slider_change(idx, v)
+
+            ttk.Scale(self.cols_frame, from_=0, to=600, variable=val, command=make_cmd(i)).pack(fill=tk.X)
+
+    def _on_col_slider_change(self, idx, val):
+        self.col_width_labels[idx].config(text=f"{self.tables[self.current_table_idx]['columns'][idx] or 'Col ' + str(idx+1)}: {int(float(val))}px")
+        self._update_preview_delayed()
+
     def _set_ui_state(self, state, status_text):
         self.status_label.config(text=f"Status: {status_text}")
         tk_state = tk.NORMAL if state == 'normal' else tk.DISABLED
@@ -666,6 +759,7 @@ class AppGUI:
             self.table_settings[old_idx]['offset_x'] = self.offset_x.get()
             self.table_settings[old_idx]['offset_y'] = self.offset_y.get()
             self.table_settings[old_idx]['scale'] = self.scale_var.get()
+            self.table_settings[old_idx]['col_widths'] = {str(i): int(float(v.get())) for i, v in enumerate(self.col_width_vars)}
 
             self.current_table_idx = sel[0]
             new_idx = str(self.tables[self.current_table_idx]["index"])
@@ -678,6 +772,8 @@ class AppGUI:
             self.lbl_offset_x.config(text=f"Offset X: {self.offset_x.get()}")
             self.lbl_offset_y.config(text=f"Offset Y: {self.offset_y.get()}")
             self.lbl_scale.config(text=f"Escala: {self.scale_var.get():.2f}x")
+
+            self._build_col_sliders()
 
             self._update_preview_delayed()
 
@@ -721,7 +817,8 @@ class AppGUI:
             "offset_y": self.offset_y.get(),
             "scale": self.scale_var.get(),
             "bg_center": self.bg_color_center,
-            "accent_color": self.accent_color
+            "accent_color": self.accent_color,
+            "col_widths": {str(i): int(float(v.get())) for i, v in enumerate(self.col_width_vars)}
         }
 
     def _render_preview_threaded(self):
@@ -764,6 +861,7 @@ class AppGUI:
         self.table_settings[active_idx]['offset_x'] = self.offset_x.get()
         self.table_settings[active_idx]['offset_y'] = self.offset_y.get()
         self.table_settings[active_idx]['scale'] = self.scale_var.get()
+        self.table_settings[active_idx]['col_widths'] = {str(i): int(float(v.get())) for i, v in enumerate(self.col_width_vars)}
 
         settings = self._get_current_settings()
         table_data = self.tables[self.current_table_idx]
@@ -798,6 +896,7 @@ class AppGUI:
         self.table_settings[active_idx]['offset_x'] = self.offset_x.get()
         self.table_settings[active_idx]['offset_y'] = self.offset_y.get()
         self.table_settings[active_idx]['scale'] = self.scale_var.get()
+        self.table_settings[active_idx]['col_widths'] = {str(i): int(float(v.get())) for i, v in enumerate(self.col_width_vars)}
 
         # Usa layout base, mas vai substituir offset/scale por tabela
         base_settings = self._get_current_settings()
@@ -823,6 +922,7 @@ class AppGUI:
                 table_batch_settings['offset_x'] = self.table_settings[t_idx]['offset_x']
                 table_batch_settings['offset_y'] = self.table_settings[t_idx]['offset_y']
                 table_batch_settings['scale'] = self.table_settings[t_idx]['scale']
+                table_batch_settings['col_widths'] = self.table_settings[t_idx].get('col_widths', {})
 
                 filename = f"{table_data['index']+1:02d}_{table_data['safe_title']}.png"
                 save_path = out_dir / filename
