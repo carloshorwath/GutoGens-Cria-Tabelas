@@ -1,0 +1,4 @@
+Outputs_Tabelas_v3/
+__pycache__/
+*.pyc
+.env
