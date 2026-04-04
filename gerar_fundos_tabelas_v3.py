@@ -493,6 +493,14 @@ class AppGUI:
         self.offset_y = tk.IntVar(value=0)
         self.scale_var = tk.DoubleVar(value=1.0)
 
+        self.table_settings = {}
+        for t in self.tables:
+            self.table_settings[t["index"]] = {
+                'offset_x': 0,
+                'offset_y': 0,
+                'scale': 1.0
+            }
+
         self.bg_color_center = list(THEMES["Dark Red"]["bg_center"])
         self.accent_color = THEMES["Dark Red"]["accent"]
 
@@ -564,7 +572,20 @@ class AppGUI:
     def _on_table_select(self, event):
         sel = self.table_listbox.curselection()
         if sel:
+            # Salva configurações atuais para a tabela antiga
+            old_idx = self.tables[self.current_table_idx]["index"]
+            self.table_settings[old_idx]['offset_x'] = self.offset_x.get()
+            self.table_settings[old_idx]['offset_y'] = self.offset_y.get()
+            self.table_settings[old_idx]['scale'] = self.scale_var.get()
+
             self.current_table_idx = sel[0]
+            new_idx = self.tables[self.current_table_idx]["index"]
+
+            # Carrega configurações salvas para a nova tabela
+            self.offset_x.set(self.table_settings[new_idx]['offset_x'])
+            self.offset_y.set(self.table_settings[new_idx]['offset_y'])
+            self.scale_var.set(self.table_settings[new_idx]['scale'])
+
             self._update_preview_delayed()
 
     def _on_theme_change(self):
@@ -623,6 +644,12 @@ class AppGUI:
             print("Falha ao gerar preview.")
 
     def _save_current(self):
+        # Garante que os valores atuais estão salvos para a tabela ativa
+        active_idx = self.tables[self.current_table_idx]["index"]
+        self.table_settings[active_idx]['offset_x'] = self.offset_x.get()
+        self.table_settings[active_idx]['offset_y'] = self.offset_y.get()
+        self.table_settings[active_idx]['scale'] = self.scale_var.get()
+
         settings = self._get_current_settings()
         table_data = self.tables[self.current_table_idx]
         theme_folder = self.theme_name.get().replace(" ", "_")
@@ -638,9 +665,14 @@ class AppGUI:
 
     def _batch_export(self):
         print("Iniciando batch export...")
-        # Save all tables with ALL themes (with current offsets and layout)
+        # Garante que os valores atuais estão salvos para a tabela ativa
+        active_idx = self.tables[self.current_table_idx]["index"]
+        self.table_settings[active_idx]['offset_x'] = self.offset_x.get()
+        self.table_settings[active_idx]['offset_y'] = self.offset_y.get()
+        self.table_settings[active_idx]['scale'] = self.scale_var.get()
 
-        settings = self._get_current_settings()
+        # Usa layout base, mas vai substituir offset/scale por tabela
+        base_settings = self._get_current_settings()
 
         total = len(self.tables) * len(THEMES)
         count = 0
@@ -650,16 +682,24 @@ class AppGUI:
             out_dir = self.generator.output_dir / theme_folder
             out_dir.mkdir(exist_ok=True)
 
-            # Use theme colors, but keep layout/scale/offset
-            batch_settings = settings.copy()
+            # Define tema
+            batch_settings = base_settings.copy()
             batch_settings['bg_center'] = t_data['bg_center']
             batch_settings['accent_color'] = t_data['accent']
 
             for table_data in self.tables:
+                t_idx = table_data["index"]
+
+                # Aplica as configurações específicas desta tabela
+                table_batch_settings = batch_settings.copy()
+                table_batch_settings['offset_x'] = self.table_settings[t_idx]['offset_x']
+                table_batch_settings['offset_y'] = self.table_settings[t_idx]['offset_y']
+                table_batch_settings['scale'] = self.table_settings[t_idx]['scale']
+
                 filename = f"{table_data['index']+1:02d}_{table_data['safe_title']}.png"
                 save_path = out_dir / filename
                 print(f"[{count+1}/{total}] Salvando {save_path}...")
-                self.generator.generate_single_image(table_data, self.original_css, batch_settings, save_path=str(save_path))
+                self.generator.generate_single_image(table_data, self.original_css, table_batch_settings, save_path=str(save_path))
                 count += 1
 
         messagebox.showinfo("Sucesso", f"Batch export concluído!\n{count} imagens geradas.")
