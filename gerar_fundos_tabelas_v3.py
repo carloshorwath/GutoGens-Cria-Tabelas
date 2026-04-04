@@ -3,6 +3,8 @@ import sys
 import re
 import time
 import argparse
+import threading
+import json
 import numpy as np
 from pathlib import Path
 
@@ -387,7 +389,14 @@ class TableImageGenerator:
         os.remove(html_temp_path)
 
         # Scale card
+        layout = settings.get('layout', 'Left')
         scale = settings.get('scale', 1.0)
+
+        if layout == 'Fullscreen':
+            # override scale to make width fit the screen with 80px margin (40px each side)
+            target_width = VIDEO_WIDTH - 80
+            scale = target_width / card_img.width
+
         if scale != 1.0:
             new_size = (int(card_img.width * scale), int(card_img.height * scale))
             # Use LANCZOS for resizing
@@ -421,7 +430,6 @@ class TableImageGenerator:
         fundo = self.criar_fundo_final(VIDEO_WIDTH, VIDEO_HEIGHT, bg_center)
 
         # Positioning
-        layout = settings.get('layout', 'Left')
         x_ratio = LAYOUTS[layout]['x_ratio']
         y_ratio = LAYOUTS[layout]['y_ratio']
 
@@ -445,6 +453,9 @@ class TableImageGenerator:
         # Paste Shadow
         shadow_x = paste_x - pad_shadow + shadow_offset[0]
         shadow_y = paste_y - pad_shadow + shadow_offset[1]
+
+        shadow_x = max(0, shadow_x)
+        shadow_y = max(0, shadow_y)
 
         # Composite alpha requires base to be RGBA
         fundo_rgba = fundo.convert("RGBA")
@@ -495,7 +506,7 @@ class AppGUI:
 
         self.table_settings = {}
         for t in self.tables:
-            self.table_settings[t["index"]] = {
+            self.table_settings[str(t["index"])] = {
                 'offset_x': 0,
                 'offset_y': 0,
                 'scale': 1.0
@@ -504,8 +515,55 @@ class AppGUI:
         self.bg_color_center = list(THEMES["Dark Red"]["bg_center"])
         self.accent_color = THEMES["Dark Red"]["accent"]
 
+        self._load_settings()
+
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         self._update_preview_delayed()
+
+    def _load_settings(self):
+        settings_file = self.generator.output_dir / "settings.json"
+        if settings_file.exists():
+            try:
+                with open(settings_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if "theme" in data and data["theme"] in THEMES:
+                        self.theme_name.set(data["theme"])
+                        self.bg_color_center = list(THEMES[data["theme"]]["bg_center"])
+                        self.accent_color = THEMES[data["theme"]]["accent"]
+                    if "layout" in data and data["layout"] in LAYOUTS:
+                        self.layout_var.set(data["layout"])
+                    if "table_settings" in data:
+                        for k, v in data["table_settings"].items():
+                            if k in self.table_settings:
+                                self.table_settings[k].update(v)
+                        # Apply to currently selected table (index 0 by default)
+                        first_idx = str(self.tables[self.current_table_idx]["index"])
+                        self.offset_x.set(self.table_settings[first_idx]['offset_x'])
+                        self.offset_y.set(self.table_settings[first_idx]['offset_y'])
+                        self.scale_var.set(self.table_settings[first_idx]['scale'])
+            except Exception as e:
+                print(f"Erro ao carregar configurações: {e}")
+
+    def _on_closing(self):
+        # Save current table settings
+        active_idx = str(self.tables[self.current_table_idx]["index"])
+        self.table_settings[active_idx]['offset_x'] = self.offset_x.get()
+        self.table_settings[active_idx]['offset_y'] = self.offset_y.get()
+        self.table_settings[active_idx]['scale'] = self.scale_var.get()
+
+        data = {
+            "theme": self.theme_name.get(),
+            "layout": self.layout_var.get(),
+            "table_settings": self.table_settings
+        }
+        settings_file = self.generator.output_dir / "settings.json"
+        try:
+            with open(settings_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            print(f"Erro ao salvar configurações: {e}")
+        self.root.destroy()
 
     def _build_ui(self):
         # Main frames
@@ -547,18 +605,34 @@ class AppGUI:
             ttk.Radiobutton(layout_frame, text=l_name, variable=self.layout_var, value=l_name, command=self._on_setting_change).pack(side=tk.LEFT, padx=2)
 
         # Sliders
-        ttk.Label(left_frame, text="Offset X:").pack(anchor=tk.W)
+        self.lbl_offset_x = ttk.Label(left_frame, text=f"Offset X: {self.offset_x.get()}")
+        self.lbl_offset_x.pack(anchor=tk.W)
         ttk.Scale(left_frame, from_=-1000, to=1000, variable=self.offset_x, command=self._on_slider_change).pack(fill=tk.X)
 
-        ttk.Label(left_frame, text="Offset Y:").pack(anchor=tk.W)
+        self.lbl_offset_y = ttk.Label(left_frame, text=f"Offset Y: {self.offset_y.get()}")
+        self.lbl_offset_y.pack(anchor=tk.W)
         ttk.Scale(left_frame, from_=-500, to=500, variable=self.offset_y, command=self._on_slider_change).pack(fill=tk.X)
 
-        ttk.Label(left_frame, text="Escala:").pack(anchor=tk.W)
+        self.lbl_scale = ttk.Label(left_frame, text=f"Escala: {self.scale_var.get():.2f}x")
+        self.lbl_scale.pack(anchor=tk.W)
         ttk.Scale(left_frame, from_=0.5, to=2.0, variable=self.scale_var, command=self._on_slider_change).pack(fill=tk.X, pady=(0, 20))
 
         # Buttons
-        ttk.Button(left_frame, text="Salvar Esta (Save This)", command=self._save_current).pack(fill=tk.X, pady=5)
-        ttk.Button(left_frame, text="Gerar Todas (Batch Export)", command=self._batch_export).pack(fill=tk.X, pady=5)
+        self.btn_save = ttk.Button(left_frame, text="Salvar Esta (Save This)", command=self._save_current_threaded)
+        self.btn_save.pack(fill=tk.X, pady=5)
+        self.btn_batch = ttk.Button(left_frame, text="Gerar Todas (Batch Export)", command=self._batch_export_threaded)
+        self.btn_batch.pack(fill=tk.X, pady=5)
+
+        # Status Label
+        self.status_label = ttk.Label(left_frame, text="Status: Pronto")
+        self.status_label.pack(anchor=tk.W, pady=10)
+
+        # Controls list for state toggling
+        self.controls = [
+            self.table_listbox,
+            self.btn_save,
+            self.btn_batch,
+        ]
 
         # --- RIGHT FRAME (Preview) ---
         self.canvas_w = 960
@@ -568,23 +642,37 @@ class AppGUI:
         self.preview_image_id = self.preview_canvas.create_image(0, 0, anchor=tk.NW)
 
         self._pending_update = None
+        self._is_rendering = False
+
+    def _set_ui_state(self, state, status_text):
+        self.status_label.config(text=f"Status: {status_text}")
+        tk_state = tk.NORMAL if state == 'normal' else tk.DISABLED
+        for control in self.controls:
+            try:
+                control.config(state=tk_state)
+            except tk.TclError:
+                pass # Listbox might need different state handling or be ok
 
     def _on_table_select(self, event):
         sel = self.table_listbox.curselection()
         if sel:
             # Salva configurações atuais para a tabela antiga
-            old_idx = self.tables[self.current_table_idx]["index"]
+            old_idx = str(self.tables[self.current_table_idx]["index"])
             self.table_settings[old_idx]['offset_x'] = self.offset_x.get()
             self.table_settings[old_idx]['offset_y'] = self.offset_y.get()
             self.table_settings[old_idx]['scale'] = self.scale_var.get()
 
             self.current_table_idx = sel[0]
-            new_idx = self.tables[self.current_table_idx]["index"]
+            new_idx = str(self.tables[self.current_table_idx]["index"])
 
             # Carrega configurações salvas para a nova tabela
             self.offset_x.set(self.table_settings[new_idx]['offset_x'])
             self.offset_y.set(self.table_settings[new_idx]['offset_y'])
             self.scale_var.set(self.table_settings[new_idx]['scale'])
+
+            self.lbl_offset_x.config(text=f"Offset X: {self.offset_x.get()}")
+            self.lbl_offset_y.config(text=f"Offset Y: {self.offset_y.get()}")
+            self.lbl_scale.config(text=f"Escala: {self.scale_var.get():.2f}x")
 
             self._update_preview_delayed()
 
@@ -607,6 +695,9 @@ class AppGUI:
             self._update_preview_delayed()
 
     def _on_slider_change(self, event):
+        self.lbl_offset_x.config(text=f"Offset X: {self.offset_x.get()}")
+        self.lbl_offset_y.config(text=f"Offset Y: {self.offset_y.get()}")
+        self.lbl_scale.config(text=f"Escala: {self.scale_var.get():.2f}x")
         self._update_preview_delayed()
 
     def _on_setting_change(self):
@@ -616,7 +707,7 @@ class AppGUI:
         if self._pending_update is not None:
             self.root.after_cancel(self._pending_update)
         # Wait 500ms before rendering to avoid lag while dragging sliders
-        self._pending_update = self.root.after(500, self._render_preview)
+        self._pending_update = self.root.after(500, self._render_preview_threaded)
 
     def _get_current_settings(self):
         return {
@@ -628,8 +719,16 @@ class AppGUI:
             "accent_color": self.accent_color
         }
 
-    def _render_preview(self):
+    def _render_preview_threaded(self):
+        if self._is_rendering:
+            return
         self._pending_update = None
+        threading.Thread(target=self._render_preview, daemon=True).start()
+
+    def _render_preview(self):
+        self._is_rendering = True
+        self.root.after(0, lambda: self._set_ui_state('disabled', 'Renderizando Preview...'))
+
         settings = self._get_current_settings()
         table_data = self.tables[self.current_table_idx]
 
@@ -638,14 +737,25 @@ class AppGUI:
         if img:
             # Scale down for preview
             preview_img = img.resize((self.canvas_w, self.canvas_h), Image.Resampling.LANCZOS if hasattr(Image, 'Resampling') else Image.LANCZOS)
-            self.tk_img = ImageTk.PhotoImage(preview_img)
-            self.preview_canvas.itemconfig(self.preview_image_id, image=self.tk_img)
+
+            def update_canvas():
+                self.tk_img = ImageTk.PhotoImage(preview_img)
+                self.preview_canvas.itemconfig(self.preview_image_id, image=self.tk_img)
+            self.root.after(0, update_canvas)
         else:
             print("Falha ao gerar preview.")
 
+        self._is_rendering = False
+        self.root.after(0, lambda: self._set_ui_state('normal', 'Pronto'))
+
+    def _save_current_threaded(self):
+        if self._is_rendering:
+            return
+        threading.Thread(target=self._save_current, daemon=True).start()
+
     def _save_current(self):
         # Garante que os valores atuais estão salvos para a tabela ativa
-        active_idx = self.tables[self.current_table_idx]["index"]
+        active_idx = str(self.tables[self.current_table_idx]["index"])
         self.table_settings[active_idx]['offset_x'] = self.offset_x.get()
         self.table_settings[active_idx]['offset_y'] = self.offset_y.get()
         self.table_settings[active_idx]['scale'] = self.scale_var.get()
@@ -660,13 +770,26 @@ class AppGUI:
         save_path = out_dir / filename
 
         print(f"Salvando {save_path}...")
+        self._is_rendering = True
+        self.root.after(0, lambda: self._set_ui_state('disabled', 'Salvando Imagem...'))
+
         self.generator.generate_single_image(table_data, self.original_css, settings, save_path=str(save_path))
-        messagebox.showinfo("Sucesso", f"Imagem salva em:\n{save_path}")
+
+        self._is_rendering = False
+        self.root.after(0, lambda: self._set_ui_state('normal', 'Pronto'))
+        self.root.after(0, lambda: messagebox.showinfo("Sucesso", f"Imagem salva em:\n{save_path}"))
+
+    def _batch_export_threaded(self):
+        if self._is_rendering:
+            return
+        threading.Thread(target=self._batch_export, daemon=True).start()
 
     def _batch_export(self):
         print("Iniciando batch export...")
+        self._is_rendering = True
+        self.root.after(0, lambda: self._set_ui_state('disabled', 'Exportando em Lote...'))
         # Garante que os valores atuais estão salvos para a tabela ativa
-        active_idx = self.tables[self.current_table_idx]["index"]
+        active_idx = str(self.tables[self.current_table_idx]["index"])
         self.table_settings[active_idx]['offset_x'] = self.offset_x.get()
         self.table_settings[active_idx]['offset_y'] = self.offset_y.get()
         self.table_settings[active_idx]['scale'] = self.scale_var.get()
@@ -688,7 +811,7 @@ class AppGUI:
             batch_settings['accent_color'] = t_data['accent']
 
             for table_data in self.tables:
-                t_idx = table_data["index"]
+                t_idx = str(table_data["index"])
 
                 # Aplica as configurações específicas desta tabela
                 table_batch_settings = batch_settings.copy()
@@ -702,7 +825,12 @@ class AppGUI:
                 self.generator.generate_single_image(table_data, self.original_css, table_batch_settings, save_path=str(save_path))
                 count += 1
 
-        messagebox.showinfo("Sucesso", f"Batch export concluído!\n{count} imagens geradas.")
+                # Update status label
+                self.root.after(0, lambda c=count: self.status_label.config(text=f"Status: Exportando... {c}/{total}"))
+
+        self._is_rendering = False
+        self.root.after(0, lambda: self._set_ui_state('normal', 'Pronto'))
+        self.root.after(0, lambda: messagebox.showinfo("Sucesso", f"Batch export concluído!\n{count} imagens geradas."))
 
 
 def main():
