@@ -24,6 +24,7 @@ VIDEO_WIDTH = 1920
 VIDEO_HEIGHT = 1080
 
 THEMES = {
+    "Original": {"bg_center": (15, 15, 15), "accent": "original"},
     "Dark Red": {"bg_center": (58, 14, 14), "accent": "#ff4444"},
     "Dark Blue": {"bg_center": (14, 24, 58), "accent": "#4488ff"},
     "Dark Green": {"bg_center": (14, 58, 24), "accent": "#44ff44"},
@@ -138,8 +139,11 @@ class TableImageGenerator:
         lx = bx + tw_bot + gap
         ly = by + th_bot // 2 - 3
 
-        # Convert accent_color from hex to rgb
-        accent_rgb = tuple(int(accent_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+        # Convert accent_color from hex to rgb or use a neutral color if original
+        if accent_color == "original":
+            accent_rgb = (128, 128, 128)
+        else:
+            accent_rgb = tuple(int(accent_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
 
         draw.rounded_rectangle([lx, ly, lx + line_w, ly + 6], radius=3, fill=accent_rgb)
 
@@ -162,50 +166,8 @@ class TableImageGenerator:
         processed_tables = []
 
         for i, table in enumerate(tables):
-            # 4. Automatic visual improvements: row numbers and highlighting
             # Clone the table so we don't modify the original soup structure globally
             table_copy = copy.deepcopy(table)
-
-            # highlight total row
-            for row in table_copy.find_all("tr"):
-                text = row.get_text().lower()
-                if any(word in text for word in ['total', 'sobra', 'resultado', 'saldo']):
-                    # simple check: if any cell has '-', make it red, else green.
-                    # Usually applies to the last column, but let's check all
-                    cells = row.find_all(["td", "th"])
-                    is_negative = any("-" in c.get_text() for c in cells)
-                    highlight_color = "#ff4444" if is_negative else "#44ff44"
-                    for cell in cells:
-                        cell['style'] = f"color: {highlight_color} !important;"
-
-            # row numbers
-            thead = table_copy.find("thead")
-            if thead:
-                for tr in thead.find_all("tr"):
-                    new_th = soup.new_tag("th")
-                    new_th.string = "#"
-                    tr.insert(0, new_th)
-
-            tbody = table_copy.find("tbody") or table_copy
-            idx = 1
-            for tr in tbody.find_all("tr"):
-                if tr.parent.name == "thead": continue
-                if not tr.find("td") and tr.find("th"): continue # inner header
-
-                text = tr.get_text().lower()
-                is_total_row = any(word in text for word in ['total', 'sobra', 'resultado', 'saldo'])
-
-                new_td = soup.new_tag("td")
-                if is_total_row:
-                    new_td.string = ""
-                else:
-                    new_td.string = str(idx)
-                    idx += 1
-
-                # Keep odd/even background style alignment by not adding inline styles unless necessary,
-                # but center the number
-                new_td['style'] = "text-align: center; color: #888; font-weight: bold;"
-                tr.insert(0, new_td)
 
             title_p = table.find_previous_sibling("p", class_="table-title")
             title = title_p.get_text() if title_p else f"Tabela_{i+1}"
@@ -241,110 +203,136 @@ class TableImageGenerator:
         accent_color = settings['accent_color']
         bg_center = settings['bg_center']
 
-        # accent adjusted colors for css
-        # lighten accent for titles
-        # This is a bit hacky, but works for our simple hex colors
-        r, g, b = tuple(int(accent_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-        accent_light = f"rgba({min(r+34,255)}, {min(g+34,255)}, {min(b+34,255)}, 1.0)"
-        accent_shadow = f"rgba({r}, {g}, {b}, 0.3)"
+        if accent_color == "original":
+            card_css = f"""
+            html, body {{
+                width:{self.render_w}px;
+                height:{self.render_h}px;
+                overflow:hidden;
+                background: #000000;
+                color: white;
+            }}
 
-        # Decorative line
-        decorative_line_css = f"""
-        .title-container {{
-            position: relative;
-            margin-bottom: 15px;
-        }}
-        .decorative-line {{
-            width: 100px;
-            height: 5px;
-            background-color: {accent_color};
-            border-radius: 3px;
-            margin-bottom: 10px;
-        }}
-        """
+            .table-content {{
+                display: inline-block;
+                background: rgb(15, 15, 15);
+                padding: 40px 40px 30px 40px;
+                border-radius: 40px;
+                border: 1px solid rgba(255,255,255,0.12);
+                border-top: 1px solid rgba(255,255,255,0.25);
+                border-left: 1px solid rgba(255,255,255,0.18);
+                margin: 10px;
+            }}
 
-        card_css = f"""
-        * {{
-            box-sizing: border-box;
-            margin:0;
-            padding:0;
-            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-        }}
+            h1 {{
+                display:none;
+            }}
+            """
+        else:
+            # accent adjusted colors for css
+            # lighten accent for titles
+            # This is a bit hacky, but works for our simple hex colors
+            r, g, b = tuple(int(accent_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+            accent_light = f"rgba({min(r+34,255)}, {min(g+34,255)}, {min(b+34,255)}, 1.0)"
+            accent_shadow = f"rgba({r}, {g}, {b}, 0.3)"
 
-        html, body {{
-            width:{self.render_w}px;
-            height:{self.render_h}px;
-            overflow:hidden;
-            background: #000000;
-            color: white;
-        }}
+            # Decorative line
+            decorative_line_css = f"""
+            .title-container {{
+                position: relative;
+                margin-bottom: 15px;
+            }}
+            .decorative-line {{
+                width: 100px;
+                height: 5px;
+                background-color: {accent_color};
+                border-radius: 3px;
+                margin-bottom: 10px;
+            }}
+            """
 
-        .table-content {{
-            display: inline-block;
-            background: rgb(15, 15, 15);
-            padding: 40px 40px 30px 40px;
-            /* We handle border-radius in Pillow for proper antialiasing and alpha */
-            border-radius: 40px;
-            border: 1px solid rgba(255,255,255,0.12);
-            border-top: 1px solid rgba(255,255,255,0.25);
-            border-left: 1px solid rgba(255,255,255,0.18);
-            margin: 10px;
-        }}
+            card_css = f"""
+            * {{
+                box-sizing: border-box;
+                margin:0;
+                padding:0;
+                font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            }}
 
-        table {{
-            width:100%;
-            margin-top:20px;
-            border-collapse: collapse;
-            font-size: 30px;
-            color: #eee;
-        }}
+            html, body {{
+                width:{self.render_w}px;
+                height:{self.render_h}px;
+                overflow:hidden;
+                background: #000000;
+                color: white;
+            }}
 
-        th {{
-            font-size: 34px;
-            text-align: left;
-            padding: 25px 20px;
-            border-bottom: 5px solid {accent_color};
-            color: {accent_light};
-            text-shadow: 0 0 15px {accent_shadow};
-        }}
+            .table-content {{
+                display: inline-block;
+                background: rgb(15, 15, 15);
+                padding: 40px 40px 30px 40px;
+                /* We handle border-radius in Pillow for proper antialiasing and alpha */
+                border-radius: 40px;
+                border: 1px solid rgba(255,255,255,0.12);
+                border-top: 1px solid rgba(255,255,255,0.25);
+                border-left: 1px solid rgba(255,255,255,0.18);
+                margin: 10px;
+            }}
 
-        td {{
-            padding: 22px 20px;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-            color: #eeeeee !important;
-        }}
+            table {{
+                width:100%;
+                margin-top:20px;
+                border-collapse: collapse;
+                font-size: 30px;
+                color: #eee;
+            }}
 
-        tr:nth-child(even) td {{
-            background: rgba(255,255,255,0.02);
-        }}
+            th {{
+                font-size: 34px;
+                text-align: left;
+                padding: 25px 20px;
+                border-bottom: 5px solid {accent_color};
+                color: {accent_light};
+                text-shadow: 0 0 15px {accent_shadow};
+            }}
 
-        h1 {{
-            display:none;
-        }}
+            td {{
+                padding: 22px 20px;
+                border-bottom: 1px solid rgba(255,255,255,0.08);
+                color: #eeeeee !important;
+            }}
 
-        .table-title {{
-            font-size: 50px;
-            font-weight: 800;
-            color: {accent_light};
-            text-transform: uppercase;
-            letter-spacing: 4px;
-            text-shadow: 0 0 30px {accent_shadow};
-        }}
+            tr:nth-child(even) td {{
+                background: rgba(255,255,255,0.02);
+            }}
 
-        table.corte-gastos {{
-            font-size: 22px !important;
-        }}
+            h1 {{
+                display:none;
+            }}
 
-        table.corte-gastos th {{
-            font-size: 24px !important;
-            padding: 15px 10px !important;
-        }}
+            .table-title {{
+                font-size: 50px;
+                font-weight: 800;
+                color: {accent_light};
+                text-transform: uppercase;
+                letter-spacing: 4px;
+                text-shadow: 0 0 30px {accent_shadow};
+            }}
 
-        table.corte-gastos td {{
-            padding: 15px 10px !important;
-        }}
-        {decorative_line_css}
-        """
+            table.corte-gastos {{
+                font-size: 22px !important;
+            }}
+
+            table.corte-gastos th {{
+                font-size: 24px !important;
+                padding: 15px 10px !important;
+            }}
+
+            table.corte-gastos td {{
+                padding: 15px 10px !important;
+            }}
+            {decorative_line_css}
+            """
 
         # Inject colgroup if col_widths is provided
         table_html = table_data['html']
@@ -368,25 +356,43 @@ class TableImageGenerator:
             except Exception as e:
                 print(f"Erro ao aplicar col_widths: {e}")
 
-        html_render = f"""
-        <html>
-        <head>
-        <style>
-        {original_css}
-        {card_css}
-        </style>
-        </head>
-        <body>
-        <div class="table-content">
-            <div class="title-container">
-                <div class="decorative-line"></div>
+        if accent_color == "original":
+            html_render = f"""
+            <html>
+            <head>
+            <style>
+            {original_css}
+            {card_css}
+            </style>
+            </head>
+            <body>
+            <div class="table-content">
                 <p class="table-title">{table_data['title']}</p>
+                {table_html}
             </div>
-            {table_html}
-        </div>
-        </body>
-        </html>
-        """
+            </body>
+            </html>
+            """
+        else:
+            html_render = f"""
+            <html>
+            <head>
+            <style>
+            {original_css}
+            {card_css}
+            </style>
+            </head>
+            <body>
+            <div class="table-content">
+                <div class="title-container">
+                    <div class="decorative-line"></div>
+                    <p class="table-title">{table_data['title']}</p>
+                </div>
+                {table_html}
+            </div>
+            </body>
+            </html>
+            """
 
         temp_filename = f"_temp_{table_data['index']}.png"
         html_temp_path = os.path.join(self.output_dir, f"_render_{table_data['index']}.html")
@@ -683,6 +689,9 @@ class AppGUI:
         self._build_col_sliders()
 
         # Buttons
+        self.btn_reset = ttk.Button(left_frame, text="Resetar Ajustes da Tabela Atual", command=self._reset_current_table_settings)
+        self.btn_reset.pack(fill=tk.X, pady=(10, 5))
+
         self.btn_save = ttk.Button(left_frame, text="Salvar Esta (Save This)", command=self._save_current_threaded)
         self.btn_save.pack(fill=tk.X, pady=5)
         self.btn_batch = ttk.Button(left_frame, text="Gerar Todas (Batch Export)", command=self._batch_export_threaded)
@@ -695,6 +704,7 @@ class AppGUI:
         # Controls list for state toggling
         self.controls = [
             self.table_listbox,
+            self.btn_reset,
             self.btn_save,
             self.btn_batch,
         ]
@@ -799,6 +809,21 @@ class AppGUI:
         self.lbl_offset_x.config(text=f"Offset X: {self.offset_x.get()}")
         self.lbl_offset_y.config(text=f"Offset Y: {self.offset_y.get()}")
         self.lbl_scale.config(text=f"Escala: {self.scale_var.get():.2f}x")
+        self._update_preview_delayed()
+
+    def _reset_current_table_settings(self):
+        self.offset_x.set(0)
+        self.offset_y.set(0)
+        self.scale_var.set(1.0)
+
+        self.lbl_offset_x.config(text=f"Offset X: 0")
+        self.lbl_offset_y.config(text=f"Offset Y: 0")
+        self.lbl_scale.config(text=f"Escala: 1.00x")
+
+        for i, v in enumerate(self.col_width_vars):
+            v.set(0)
+            self.col_width_labels[i].config(text=f"{self.tables[self.current_table_idx]['columns'][i] or 'Col ' + str(i+1)}: 0px")
+
         self._update_preview_delayed()
 
     def _on_setting_change(self):
