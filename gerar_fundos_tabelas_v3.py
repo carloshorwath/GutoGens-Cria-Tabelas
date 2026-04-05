@@ -334,25 +334,43 @@ class TableImageGenerator:
             {decorative_line_css}
             """
 
-        # Inject colgroup if col_widths is provided
+        # Inject column widths via CSS and table-layout
         table_html = table_data['html']
         col_widths = settings.get('col_widths', {})
+
+        # Add to card_css always
+        card_css += """
+        td {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        """
+
         if any(w > 0 for w in col_widths.values() if isinstance(w, (int, float))):
             try:
                 soup = BeautifulSoup(table_html, "html.parser")
                 table_tag = soup.find("table")
                 if table_tag:
-                    colgroup = soup.new_tag("colgroup")
-                    # Make sure we iterate through all defined columns up to the maximum index
-                    max_idx = max([int(k) for k in col_widths.keys()] + [-1])
-                    for i in range(max_idx + 1):
-                        w = col_widths.get(str(i), 0)
-                        col_tag = soup.new_tag("col")
-                        if w > 0:
-                            col_tag['style'] = f"width:{w}px;"
-                        colgroup.append(col_tag)
-                    table_tag.insert(0, colgroup)
+                    existing_style = table_tag.get('style', '')
+                    if 'table-layout' not in existing_style:
+                        table_tag['style'] = f"{existing_style} table-layout: fixed !important;".strip()
+
                     table_html = str(soup)
+
+                # Build CSS rules for widths
+                max_idx = max([int(k) for k in col_widths.keys()] + [-1])
+                for i in range(max_idx + 1):
+                    w = col_widths.get(str(i), 0)
+                    if w > 0:
+                        n = i + 1
+                        card_css += f"""
+                        table th:nth-child({n}), table td:nth-child({n}) {{
+                            width: {w}px !important;
+                            min-width: {w}px !important;
+                            max-width: {w}px !important;
+                        }}
+                        """
             except Exception as e:
                 print(f"Erro ao aplicar col_widths: {e}")
 
